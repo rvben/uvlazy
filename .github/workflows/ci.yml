@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: astral-sh/setup-uv@v10.0.1
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: uvx ruff check src tests scripts examples
+      - run: uvx ruff format --check src tests scripts examples
+
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python }}, uv ${{ matrix.uv }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.11'
+            uv: '0.6.6'
+          - os: ubuntu-latest
+            python: '3.14'
+            uv: latest
+          - os: macos-14
+            python: '3.14'
+            uv: latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: ${{ matrix.uv }}
+      - run: uv python install ${{ matrix.python }}
+      - name: Verify the Cargo package can build independently
+        run: cargo package --locked
+      - name: Install through Cargo
+        run: cargo install --path . --locked --root .uvlazy/cargo-test
+      - name: Test the Cargo executable offline
+        env:
+          UVLAZY_TEST_BINARY: .uvlazy/cargo-test/bin/uvlazy
+          PYTHONPATH: src
+        run: uv run --no-project --python ${{ matrix.python }} python -m unittest discover -s tests -v
+      - name: Build a wheel from the source distribution
+        run: |
+          uvx 'maturin>=1.8,<2' sdist --out dist
+          mkdir -p .uvlazy/sdist
+          tar -xzf dist/*.tar.gz -C .uvlazy/sdist
+          uvx 'maturin>=1.8,<2' build --release --locked --out dist \
+            --manifest-path .uvlazy/sdist/uvlazy-*/Cargo.toml
+      - name: Install the wheel
+        run: |
+          uv venv --python ${{ matrix.python }} .uvlazy/wheel-test
+          uv pip install --python .uvlazy/wheel-test/bin/python --no-index dist/*.whl
+      - name: Test the PyPI executable offline
+        env:
+          UVLAZY_TEST_BINARY: .uvlazy/wheel-test/bin/uvlazy
+          PYTHONPATH: src
+        run: .uvlazy/wheel-test/bin/python -m unittest discover -s tests -v
+
+  all-checks-passed:
+    name: All checks passed
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    if: always()
+    steps:
+      - name: Verify all checks passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            test "$result" = success || exit 1
+          done

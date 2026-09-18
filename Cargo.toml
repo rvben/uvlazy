@@ -1,0 +1,25 @@
+[package]
+name = "uvlazy"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+description = "Run project-locked tools and install Python dependencies only when used"
+license = "MIT"
+repository = "https://github.com/rvben/uvlazy"
+homepage = "https://github.com/rvben/uvlazy"
+readme = "README.md"
+keywords = ["uv", "python", "dependencies", "lazy", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+include = [
+    "/Cargo.toml", "/Cargo.lock", "/build.rs", "/src/*.rs", "/src/uvlazy/*.py",
+    "/scripts/launch.py", "/pyproject.toml", "/README.md", "/LICENSE", "/tests/*.py",
+]
+
+[[bin]]
+name = "uvlazy"
+path = "src/main.rs"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

@@ -1,0 +1,8 @@
+[project]
+name = "lazy-demo"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["rich>=13", "Pillow>=10"]
+
+[tool.uvlazy.imports]
+PIL = "Pillow"
