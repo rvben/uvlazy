@@ -73,7 +73,9 @@ class LauncherTests(unittest.TestCase):
         self.env["UV_PYTHON"] = str(self.root / "missing-python")
         result = self.invoke("run", "tool")
         self.assertEqual(result.returncode, 1)
-        self.assertIn(str(self.root / "missing-python"), result.stderr)
+        # uv may render a path relative to its working directory.
+        self.assertIn("missing-python", result.stderr)
+        self.assertIn("Python discovery failed", result.stderr)
         self.assertFalse((self.root / ".uvlazy").exists())
 
     def test_uv_discovery_errors_preserve_the_real_cause(self):
