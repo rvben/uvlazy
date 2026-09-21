@@ -73,8 +73,29 @@ class LauncherTests(unittest.TestCase):
         self.env["UV_PYTHON"] = str(self.root / "missing-python")
         result = self.invoke("run", "tool")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("UV_PYTHON", result.stderr)
+        self.assertIn(str(self.root / "missing-python"), result.stderr)
         self.assertFalse((self.root / ".uvlazy").exists())
+
+    def test_uv_discovery_errors_preserve_the_real_cause(self):
+        shim = self.root / "uv"
+        self.env["PATH"] = str(self.root)
+        for diagnostic, status in [
+            ("mise ERROR Config files are not trusted. Trust them with `mise trust`.", 1),
+            ("error: failed to open uv cache: Permission denied", 2),
+        ]:
+            with self.subTest(diagnostic=diagnostic):
+                shim.write_text(f"#!/bin/sh\nprintf '%s\\n' '{diagnostic}' >&2\nexit {status}\n")
+                shim.chmod(0o755)
+                result = self.invoke("run", "tool")
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, "")
+                self.assertIn(diagnostic, result.stderr)
+                self.assertIn(str(shim), result.stderr)
+                self.assertIn("Python discovery", result.stderr)
+                self.assertNotIn("Python 3.11+ is required", result.stderr)
+                self.assertNotIn("uv python install", result.stderr)
+                self.assertFalse((self.root / ".uvlazy").exists())
+                self.assertFalse(Path(self.env["UVLAZY_CACHE_DIR"]).exists())
 
     def test_bundle_is_isolated_reusable_and_repairs_corrupt_cache(self):
         (self.root / "argparse.py").write_text("raise RuntimeError('shadowed stdlib')\n")
@@ -314,6 +335,47 @@ class IntegrationTests(unittest.TestCase):
         result = self.invoke("run", "lint-tool")
         self.assert_success(result)
         self.assertEqual(json.loads(result.stdout)["installed"], ["lint-tool", "shared"])
+
+    def test_cdk_selects_cli_without_installing_sdk_or_unrelated_dependencies(self):
+        wheel(
+            self.wheels,
+            "aws-cdk-cli",
+            entries={"cdk": "aws_cdk_cli:main"},
+            code=textwrap.dedent("""
+                def main():
+                    import importlib.metadata as metadata
+                    import json
+                    print(json.dumps(sorted(
+                        dist.metadata["Name"] for dist in metadata.distributions()
+                    )))
+                    return 0
+            """),
+        )
+        wheel(self.wheels, "aws-cdk-lib", requires=["shared"])
+        for grouped in [False, True]:
+            with self.subTest(grouped=grouped):
+                if grouped:
+                    self.project(
+                        ["unused"],
+                        '[dependency-groups]\ndev = ["aws-cdk-cli", "aws-cdk-lib", "second"]\n',
+                    )
+                else:
+                    self.project(["aws-cdk-cli", "aws-cdk-lib", "second", "unused"])
+                before = self.lock()
+                result = self.invoke("run", "cdk")
+                self.assert_success(result)
+                self.assertEqual(json.loads(result.stdout), ["aws-cdk-cli"])
+                self.assertEqual((self.root / "uv.lock").read_bytes(), before)
+                self.assertFalse((self.root / ".venv").exists())
+
+    def test_cdk_does_not_install_an_undeclared_cli_provider(self):
+        wheel(self.wheels, "aws-cdk-lib")
+        self.project(["aws-cdk-lib"])
+        self.lock()
+        result = self.invoke("run", "cdk")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("No declared package", result.stderr)
+        self.assertFalse((self.root / ".uvlazy").exists())
 
     def test_command_in_legacy_dev_dependencies(self):
         self.tool_project()
@@ -640,6 +702,14 @@ class ConfigTests(unittest.TestCase):
     def test_command_alias_cannot_add_undeclared_package(self):
         with self.assertRaisesRegex(UvlazyError, "declared"):
             self.read('[tool.uvlazy.commands]\nlint = "undeclared"')
+
+    def test_cdk_alias_can_be_overridden_explicitly(self):
+        project = self.read(
+            '[project]\ndependencies = ["aws-cdk-cli", "custom-cdk"]\n'
+            '[tool.uvlazy.commands]\ncdk = "custom-cdk"\n'
+        )
+        self.assertEqual(project.command_package("cdk", None, None), ("custom-cdk", []))
+        self.assertEqual(project.command_package("cdk", None, "aws-cdk-cli"), ("aws-cdk-cli", []))
 
     def test_group_command_automatically_selects_direct_group(self):
         project = self.read("""

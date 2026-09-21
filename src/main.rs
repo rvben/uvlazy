@@ -33,7 +33,7 @@ fn launch() -> Result<(), String> {
     // Interpreter discovery must never sync the current project's dependencies.
     let uv = find_uv().ok_or("uv is required. Install uv and put it on PATH.")?;
     let request = env::var_os("UV_PYTHON").unwrap_or_else(|| OsString::from(">=3.11"));
-    let found = Command::new(uv)
+    let found = Command::new(&uv)
         .args(["python", "find", "--system", "--no-project"])
         .arg(request)
         .env_remove("PYTHONHOME")
@@ -42,9 +42,11 @@ fn launch() -> Result<(), String> {
         .output()
         .map_err(|error| format!("could not run uv: {error}. Install uv and put it on PATH."))?;
     if !found.status.success() {
-        return Err(
-            "Python 3.11+ is required. Install it with `uv python install 3.11`, or set UV_PYTHON to a compatible interpreter.".into(),
-        );
+        return Err(format!(
+            "Python discovery failed: {} python find ({}); see its diagnostic above.",
+            uv.display(),
+            found.status
+        ));
     }
     let python = String::from_utf8(found.stdout)
         .map_err(|_| "uv returned a Python path that is not UTF-8".to_string())?;

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1
+
+- Recognize `cdk` as a command provided by the declared `aws-cdk-cli` dependency,
+  selecting only that package and its dependencies without a manual alias.
+- Report failed Python discovery with the uv executable and exit status, while
+  preserving the underlying diagnostic. Configuration, mise trust, and cache
+  failures no longer incorrectly report that Python is missing.
+
 ## 0.1.0
 
 Initial experimental release for macOS and Linux.

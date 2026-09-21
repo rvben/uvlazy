@@ -47,6 +47,12 @@ installed Python 3.11+ without syncing a project. Set `UV_PYTHON` to choose a
 specific interpreter, for example `UV_PYTHON=3.12 uvlazy run rumdl check .`.
 If no compatible Python is installed, run `uv python install 3.11` first.
 
+uvlazy invokes the `uv` executable on PATH, including version-manager shims.
+If a mise shim reports an untrusted project configuration, review that file and
+use [`mise trust`](https://mise.jdx.dev/cli/trust.html) to approve it before
+retrying. A shim or uv configuration failure does not mean Python is missing;
+the underlying diagnostic explains what needs fixing.
+
 ## Use in CI
 
 Declare the tool in your project's `pyproject.toml`, alongside your existing
@@ -89,8 +95,21 @@ after it is passed to the tool unchanged.
 
 ## Package names and dependency groups
 
-Matching command/package names such as `rumdl` need no configuration. For a
-command whose package name differs, select its declared provider explicitly:
+Matching command/package names such as `rumdl` need no configuration. The known
+alias `cdk` also selects `aws-cdk-cli` automatically when that package is declared:
+
+```sh
+uvlazy run cdk --version
+```
+
+This installs `aws-cdk-cli` and its dependencies. It does not install
+`aws-cdk-lib`, the application's dependencies, or the other tools in its group.
+CDK subcommands that launch your application can still cause that application's
+configured runner to install packages; for example, an `app` command containing
+`uv run` in `cdk.json` has uv's usual sync behavior.
+
+For other commands whose package name differs, select the declared provider
+explicitly:
 
 ```sh
 uvlazy run --from httpie http --help

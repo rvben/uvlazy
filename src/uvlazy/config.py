@@ -10,6 +10,10 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+# Command names that differ from their published provider distribution. These
+# aliases only select an already-declared dependency; they never add one.
+COMMAND_ALIASES = {"cdk": "aws-cdk-cli"}
+
 
 class UvlazyError(RuntimeError):
     """An actionable configuration or installation failure."""
@@ -163,6 +167,10 @@ def read_project(root: Path) -> Project:
             imports[module] = name
         commands[name] = name
         commands[module] = name
+
+    for command, distribution in COMMAND_ALIASES.items():
+        if distribution in declared:
+            commands.setdefault(command, distribution)
 
     aliases = settings.get("imports", {})
     if not isinstance(aliases, dict):
