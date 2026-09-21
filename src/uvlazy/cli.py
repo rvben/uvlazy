@@ -15,6 +15,7 @@ from uvlazy import __version__
 from uvlazy.commands import run_command
 from uvlazy.config import UvlazyError, find_project, normalize, read_project
 from uvlazy.installer import Installer, environment_lock, run_uv
+from uvlazy.startup import prepare_startup
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -59,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         locked = args.locked or mode == "command"
         if locked and not (root / "uv.lock").is_file():
             raise UvlazyError("uv.lock is required. Run `uv lock` before running this command.")
-        selection = json.dumps([project.fingerprint, distribution, groups])
+        selection = json.dumps([project.fingerprint, distribution, groups, __version__])
         fingerprint = hashlib.sha256(selection.encode()).hexdigest()[:20]
         state = root / ".uvlazy" / fingerprint
         environment = state / "venv"
@@ -100,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
         environment_vars.pop("PYTHONPATH", None)
         environment_vars["VIRTUAL_ENV"] = str(environment)
         environment_vars["PATH"] = str(python.parent) + os.pathsep + os.environ.get("PATH", "")
+        environment_vars["UVLAZY_RUNTIME"] = prepare_startup(settings)
         if mode == "command":
             run_command(settings, distribution, args.target, args.arguments, environment_vars)
         if args.locked:

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2
+
+- Enable lazy imports in managed Python tools and their Python subprocesses,
+  including applications launched by native tools such as `cdk ls`. Preserve
+  dependency selection and lock constraints without syncing the whole project.
+- Recognize `import aws_cdk` as the declared `aws-cdk-lib` dependency, installing
+  the SDK only when the application imports it.
+- Keep interpreter probes and package builds outside the lazy import hook to
+  avoid recursive installation.
+
 ## 0.1.1
 
 - Recognize `cdk` as a command provided by the declared `aws-cdk-cli` dependency,

@@ -9,8 +9,9 @@ uvlazy run rumdl check .
 
 uvlazy finds the declared package providing `rumdl`, reads the version constraints
 from `uv.lock`, installs that package and its dependency tree into a dedicated
-environment, and runs its executable. Application dependencies and unrelated
-tools stay uninstalled. Python console scripts and native executables both work.
+environment, and runs its executable. Declared application dependencies are
+installed if the tool or its Python subprocesses import them; unrelated packages
+stay uninstalled. Python console scripts and native executables both work.
 
 This is experimental software for macOS and Linux. It requires Python 3.11+ and
 `uv` 0.6.6+ on PATH. Cargo and PyPI install the same Rust executable, which
@@ -102,11 +103,14 @@ alias `cdk` also selects `aws-cdk-cli` automatically when that package is declar
 uvlazy run cdk --version
 ```
 
-This installs `aws-cdk-cli` and its dependencies. It does not install
-`aws-cdk-lib`, the application's dependencies, or the other tools in its group.
-CDK subcommands that launch your application can still cause that application's
-configured runner to install packages; for example, an `app` command containing
-`uv run` in `cdk.json` has uv's usual sync behavior.
+This installs `aws-cdk-cli` and its dependencies. When `cdk ls` launches
+`python3 app.py`, that child Python process also installs declared dependencies
+on import. In particular, `import aws_cdk` selects a declared `aws-cdk-lib`
+dependency automatically. The SDK is installed only when imported; unrelated
+application dependencies and tools stay uninstalled.
+
+This works with an ordinary `"app": "python3 app.py"` in `cdk.json`.
+An application runner containing `uv run` still has uv's usual sync behavior.
 
 For other commands whose package name differs, select the declared provider
 explicitly:
@@ -164,6 +168,14 @@ normal dependency tree. The script is never restarted, and exceptions inside
 imported packages propagate normally. Existing modules and your local code take
 precedence.
 
+The import hook also applies to Python tools and their Python subprocesses in
+the managed environment, including children started by native executables or
+shell scripts. They inherit the same dependency selection and lock constraints.
+Ordinary `python`/`python3` commands on PATH and `sys.executable` use that
+environment. A child that selects another environment, clears the inherited
+activation variable, or disables Python's site initialization with `-S` does not
+activate the hook.
+
 By default, scripts select `[project].dependencies`; `--group` adds groups.
 Mappings handle differing import and distribution names:
 
@@ -207,7 +219,7 @@ Subsequent runs reuse installed packages. Concurrent runs serialize environment
 creation and installation. A warm tool environment can run offline.
 
 Changes to `pyproject.toml`, `uv.lock`, local `uv.toml`, the launcher interpreter,
-selected groups, or checkout path select a fresh environment. This avoids
+selected groups, uvlazy version, or checkout path select a fresh environment. This avoids
 reusing virtualenv scripts whose absolute paths point to another checkout.
 Existing `.venv` and `uv.lock` files are left alone.
 
@@ -223,10 +235,11 @@ archive is keyed by its contents and recreated locally when needed.
 
 ## Current boundaries
 
-- Tool runs install the tool's normal dependency tree. They do not inject a lazy
-  import hook into the executable or automatically install undeclared plugins.
-  Tools that need the application installed, such as many pytest workflows,
-  still need a complete project environment.
+- Tool runs install the tool's normal dependency tree. Missing imports in Python
+  tools or their managed Python children can install declared dependencies, but
+  undeclared plugins are not installed automatically. Tools that require project
+  installation or discover plugins through package metadata still need that
+  setup separately.
 - Lock export supplies version/source constraints without enforcing lockfile
   artifact hashes. This is not a complete replacement for uv's locked sync.
 - The project itself is not installed. Editable installs and uv sources/workspaces
@@ -235,7 +248,6 @@ archive is keyed by its contents and recreated locally when needed.
   selected requirement and environment markers are passed through to uv.
 - For Python scripts, metadata queries, plugin discovery, namespace-package
   mappings, and newly installed `.pth` hooks have no special lazy handling.
-  New Python subprocesses do not inherit the import hook.
 - Set `UV_PYTHON` to an installed interpreter compatible with the project and
   selected groups. The default selects an installed Python 3.11+; it does not
   infer the project's Python requirement. Windows is not supported yet.

@@ -6,6 +6,8 @@ import base64
 import hashlib
 import json
 import os
+import select
+import shlex
 import shutil
 import subprocess
 import sys
@@ -379,6 +381,135 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("No declared package", result.stderr)
         self.assertFalse((self.root / ".uvlazy").exists())
 
+    def test_cdk_child_installs_sdk_on_import_without_syncing_project(self):
+        wheel(
+            self.wheels,
+            "aws-cdk-cli",
+            scripts={"cdk": '#!/bin/sh\nshift\nexec python3 app.py "$@"\n'},
+        )
+        wheel(self.wheels, "aws-cdk-lib", module="aws_cdk", requires=["shared<2"])
+        self.project(["aws-cdk-cli", "aws-cdk-lib", "unused"])
+        before = self.lock()
+        wheel(self.wheels, "aws-cdk-lib", "2.0", module="aws_cdk")
+        (self.wheels / "unused-1.0-py3-none-any.whl").unlink()
+        self.script("""
+            from pathlib import Path
+            with Path("started").open("a") as handle:
+                handle.write("once\\n")
+            import aws_cdk
+            import importlib.metadata as metadata
+            import json
+            import sys
+            assert sum(type(f).__name__ == "LazyFinder" for f in sys.meta_path) == 1
+            print(json.dumps({
+                "args": sys.argv[1:],
+                "sdk": metadata.version("aws-cdk-lib"),
+                "installed": sorted(d.metadata["Name"] for d in metadata.distributions()),
+            }))
+        """)
+        result = self.invoke("run", "cdk", "ls", "two words")
+        self.assert_success(result)
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "args": ["two words"],
+                "sdk": "1.0",
+                "installed": ["aws-cdk-cli", "aws-cdk-lib", "shared"],
+            },
+        )
+        self.assertEqual((self.root / "started").read_text(), "once\n")
+        self.assertEqual((self.root / "uv.lock").read_bytes(), before)
+        self.assertFalse((self.root / ".venv").exists())
+
+    def test_nested_python_children_inherit_lazy_imports_and_uv_does_not(self):
+        shim = self.root / "uv"
+        shim.write_text(
+            '#!/bin/sh\nif [ -n "${UVLAZY_RUNTIME:-}" ]; then exit 89; fi\n'
+            f'PATH={shlex.quote(self.env["PATH"])} exec {shlex.quote(UV)} "$@"\n'
+        )
+        shim.chmod(0o755)
+        self.env["PATH"] = str(self.root) + os.pathsep + self.env["PATH"]
+        (self.root / "child.py").write_text(
+            textwrap.dedent("""
+            import subprocess
+            import sys
+            import first
+            print(first.VALUE, flush=True)
+            raise SystemExit(subprocess.call([
+                sys.executable, "-I", "-c", "import second; print(second.VALUE)"
+            ]))
+        """)
+        )
+        result = self.run_script("""
+            import subprocess
+            import sys
+            raise SystemExit(subprocess.call(["python3", "child.py"]))
+        """)
+        self.assert_success(result)
+        self.assertEqual(result.stdout, "1\n42\n")
+
+    def test_child_hook_requires_managed_python_and_inherited_activation(self):
+        result = self.run_script("""
+            import os
+            import subprocess
+            import sys
+            commands = [
+                ([sys.executable], {k: v for k, v in os.environ.items() if k != "UVLAZY_RUNTIME"}),
+                ([sys.executable, "-S"], os.environ.copy()),
+                ([sys._base_executable, "-I"], os.environ.copy()),
+            ]
+            for command, env in commands:
+                child = subprocess.run(
+                    [*command, "-c", "import first"], env=env, capture_output=True, text=True
+                )
+                assert child.returncode != 0, child.stdout
+                assert "No module named 'first'" in child.stderr, child.stderr
+            child = subprocess.run(
+                [sys.executable, "-c", "import undeclared_missing"],
+                capture_output=True, text=True,
+            )
+            assert "No module named 'undeclared_missing'" in child.stderr, child.stderr
+            import importlib.metadata as metadata
+            assert list(metadata.distributions()) == []
+            print("scoped")
+        """)
+        self.assert_success(result)
+        self.assertEqual(result.stdout, "scoped\n")
+        self.assertNotIn("installing", result.stderr)
+
+    def test_child_keeps_quiet_settings_when_another_run_reuses_environment(self):
+        self.script("""
+            import subprocess
+            import sys
+            print("ready", flush=True)
+            input()
+            raise SystemExit(subprocess.call([
+                sys.executable, "-c", "import first; print(first.VALUE)"
+            ]))
+        """)
+        (self.root / "other.py").write_text('print("other run")\n')
+        process = subprocess.Popen(
+            [*UVLAZY, "run", "--quiet", "app.py"],
+            cwd=self.root,
+            env=self.env,
+            text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            self.assertTrue(select.select([process.stdout], [], [], 30)[0])
+            self.assertEqual(process.stdout.readline(), "ready\n")
+            self.assert_success(self.invoke("run", "other.py"))
+            stdout, stderr = process.communicate(input="\n", timeout=30)
+            self.assertEqual(process.returncode, 0, stdout + stderr)
+            self.assertEqual(stdout, "1\n")
+            self.assertEqual(stderr, "")
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate()
+
     def test_command_in_legacy_dev_dependencies(self):
         self.tool_project()
         self.project(["second", "unused"], '[tool.uv]\ndev-dependencies = ["lint-tool"]\n')
@@ -712,6 +843,15 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(project.command_package("cdk", None, None), ("custom-cdk", []))
         self.assertEqual(project.command_package("cdk", None, "aws-cdk-cli"), ("aws-cdk-cli", []))
+
+    def test_sdk_alias_requires_declaration_and_allows_override(self):
+        project = self.read('[project]\ndependencies = ["aws-cdk-cli"]')
+        self.assertNotIn("aws_cdk", project.imports)
+        project = self.read(
+            '[project]\ndependencies = ["aws-cdk-lib", "custom-sdk"]\n'
+            '[tool.uvlazy.imports]\naws_cdk = "custom-sdk"\n'
+        )
+        self.assertEqual(project.imports["aws_cdk"], "custom-sdk")
 
     def test_group_command_automatically_selects_direct_group(self):
         project = self.read("""

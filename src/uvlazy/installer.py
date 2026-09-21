@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,14 @@ def environment_lock(directory: Path):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def installer_environment() -> dict[str, str]:
+    # Interpreter probes and isolated package builds must not re-enter a lazy
+    # installer while the calling process holds the environment lock.
+    env = os.environ.copy()
+    env.pop("UVLAZY_RUNTIME", None)
+    return env
+
+
 def run_uv(command: list[str], root: Path, *, output: bool = False) -> str:
     result = subprocess.run(
         command,
@@ -33,6 +42,7 @@ def run_uv(command: list[str], root: Path, *, output: bool = False) -> str:
         stdout=subprocess.PIPE if output else sys.stderr,
         text=True,
         check=False,
+        env=installer_environment(),
     )
     if result.returncode:
         raise UvlazyError(f"uv failed (exit {result.returncode}); see its diagnostic above.")

@@ -13,6 +13,7 @@ from pathlib import Path
 # Command names that differ from their published provider distribution. These
 # aliases only select an already-declared dependency; they never add one.
 COMMAND_ALIASES = {"cdk": "aws-cdk-cli"}
+IMPORT_ALIASES = {"aws_cdk": "aws-cdk-lib"}
 
 
 class UvlazyError(RuntimeError):
@@ -171,6 +172,9 @@ def read_project(root: Path) -> Project:
     for command, distribution in COMMAND_ALIASES.items():
         if distribution in declared:
             commands.setdefault(command, distribution)
+    for module, distribution in IMPORT_ALIASES.items():
+        if distribution in declared:
+            imports.setdefault(module, distribution)
 
     aliases = settings.get("imports", {})
     if not isinstance(aliases, dict):
@@ -197,7 +201,7 @@ def read_project(root: Path) -> Project:
     lock = root / "uv.lock"
     digest = hashlib.sha256()
     for content in (
-        b"uvlazy-environment-v2",
+        b"uvlazy-environment-v3",
         # Virtualenv executable shebangs contain absolute paths. Do not reuse a
         # CI cache restored under a different checkout directory.
         str(root).encode(),

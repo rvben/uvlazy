@@ -50,12 +50,28 @@ class LazyFinder:
             self.installing = False
 
 
-def main(settings_json: str, mode: str, target: str, arguments: list[str]) -> int:
-    settings = json.loads(settings_json)
+def install_hook(settings: dict) -> LazyFinder:
     if sys.prefix == sys.base_prefix:
         raise UvlazyError("The lazy import hook must run inside its managed virtual environment.")
+    # site can process a virtualenv's .pth files more than once at startup.
+    for finder in sys.meta_path:
+        if isinstance(finder, LazyFinder) and finder.installer.state == Path(settings["state"]):
+            return finder
     finder = LazyFinder(settings)
     sys.meta_path.append(finder)
+    return finder
+
+
+def activate(settings_path: str):
+    settings = json.loads(Path(settings_path).read_text(encoding="utf-8"))
+    environment = Path(settings["python"]).parent.parent
+    if Path(sys.prefix).resolve() == environment.resolve():
+        install_hook(settings)
+
+
+def main(settings_json: str, mode: str, target: str, arguments: list[str]) -> int:
+    settings = json.loads(settings_json)
+    finder = install_hook(settings)
     sys.argv = [target, *arguments]
     # Replace the launcher's import path with ordinary Python script/-m behavior.
     sys.path[:2] = [str(Path(target).resolve().parent) if mode == "script" else os.getcwd()]

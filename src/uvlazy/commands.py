@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 from uvlazy.config import UvlazyError
-from uvlazy.installer import Installer, environment_lock
+from uvlazy.installer import Installer, environment_lock, installer_environment
 
 
 def owns_executable(python: str, distribution: str, executable: Path) -> bool:
@@ -31,6 +31,7 @@ raise SystemExit(0 if any(
         [python, "-I", "-c", code, distribution, str(executable)],
         stdin=subprocess.DEVNULL,
         check=False,
+        env=installer_environment(),
     )
     return result.returncode == 0
 
