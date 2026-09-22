@@ -12,13 +12,57 @@ import sys
 from pathlib import Path
 
 from uvlazy import __version__
-from uvlazy.commands import run_command
-from uvlazy.config import UvlazyError, find_project, normalize, read_project
+from uvlazy.commands import run_command, run_ephemeral_command
+from uvlazy.config import UvlazyError, find_project, normalize, parse_requirements, read_project
 from uvlazy.installer import Installer, environment_lock, run_uv
 from uvlazy.startup import prepare_startup
 
 
+def delegates_to_uv(arguments: list[str]) -> bool:
+    """Return whether arguments use uv syntax outside uvlazy's native surface."""
+    if not arguments:
+        return False
+    if arguments[0] != "run":
+        return arguments[0] not in {"--help", "-h", "--version", "-V"}
+
+    index = 1
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument in {"--help", "-h"}:
+            return False
+        if argument in {"--project", "--from", "--group", "--with", "--extra-index-url"}:
+            index += 2
+            continue
+        if (
+            argument.startswith(
+                ("--project=", "--from=", "--group=", "--with=", "--extra-index-url=")
+            )
+            or argument in {"-q", "--quiet", "-m", "--module", "--locked"}
+            or (argument.startswith("-") and len(argument) > 1 and set(argument[1:]) <= {"q", "m"})
+        ):
+            index += 1
+            continue
+        # Once uvlazy's target is reached, all remaining options belong to it.
+        return argument.startswith("-")
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    try:
+        if sys.platform == "win32":
+            raise UvlazyError("This prototype currently supports macOS and Linux.")
+        if delegates_to_uv(arguments):
+            uv = shutil.which("uv")
+            if not uv:
+                raise UvlazyError(
+                    "uv is required on PATH. Install it from https://docs.astral.sh/uv/."
+                )
+            os.execv(uv, [uv, *arguments])
+    except (UvlazyError, OSError) as exc:
+        print(f"uvlazy: {exc}", file=sys.stderr)
+        return 1
+
     parser = argparse.ArgumentParser(
         prog="uvlazy", description="Install only the tool or Python packages you use."
     )
@@ -30,13 +74,27 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("-m", "--module", action="store_true", help="run a module, like python -m")
     run.add_argument("--from", dest="provider", help="declared package providing the command")
     run.add_argument("--group", action="append", help="select a dependency group (repeatable)")
+    run.add_argument(
+        "--with",
+        dest="with_requirements",
+        action="append",
+        default=[],
+        metavar="REQUIREMENT",
+        help="run with an additional requirement (repeatable)",
+    )
+    run.add_argument(
+        "--extra-index-url",
+        dest="extra_indexes",
+        action="append",
+        default=[],
+        metavar="URL",
+        help="use an additional package index for --with requirements",
+    )
     run.add_argument("--locked", action="store_true", help="require uv.lock (automatic for tools)")
     run.add_argument("target", help="tool command, script path, or module name")
     run.add_argument("arguments", nargs=argparse.REMAINDER, help="arguments passed to your program")
-    args = parser.parse_args(argv)
+    args = parser.parse_args(arguments)
     try:
-        if sys.platform == "win32":
-            raise UvlazyError("This prototype currently supports macOS and Linux.")
         uv = shutil.which("uv")
         if not uv:
             raise UvlazyError("uv is required on PATH. Install it from https://docs.astral.sh/uv/.")
@@ -49,18 +107,34 @@ def main(argv: list[str] | None = None) -> int:
             raise UvlazyError(f"Script does not exist: {args.target}")
         if args.provider and mode != "command":
             raise UvlazyError("--from is only supported when running a tool command.")
+        if args.provider and args.with_requirements:
+            raise UvlazyError("--from cannot be combined with --with.")
+        if args.extra_indexes and not args.with_requirements:
+            raise UvlazyError("--extra-index-url requires --with.")
         root = args.project.resolve() if args.project else find_project(Path.cwd())
         project = read_project(root)
         groups = None if args.group is None else [normalize(group) for group in args.group]
         distribution = None
-        if mode == "command":
+        extra_requirements = parse_requirements(args.with_requirements, "--with")
+        if mode == "command" and not extra_requirements:
             distribution, groups = project.command_package(args.target, groups, args.provider)
         groups = sorted(set(groups or []))
         requirements = project.selected(groups)
-        locked = args.locked or mode == "command"
+        for name, items in extra_requirements.items():
+            requirements.setdefault(name, []).extend(items)
+        locked = args.locked or (mode == "command" and not extra_requirements)
         if locked and not (root / "uv.lock").is_file():
             raise UvlazyError("uv.lock is required. Run `uv lock` before running this command.")
-        selection = json.dumps([project.fingerprint, distribution, groups, __version__])
+        selection = json.dumps(
+            [
+                project.fingerprint,
+                distribution,
+                groups,
+                extra_requirements,
+                args.extra_indexes,
+                __version__,
+            ]
+        )
         fingerprint = hashlib.sha256(selection.encode()).hexdigest()[:20]
         state = root / ".uvlazy" / fingerprint
         environment = state / "venv"
@@ -88,6 +162,7 @@ def main(argv: list[str] | None = None) -> int:
             "python": str(python),
             "groups": groups,
             "locked": locked,
+            "extra_indexes": args.extra_indexes,
         }
         # Import the small, stdlib-only runner from this installation. The
         # managed environment needs no bootstrap packages of its own.
@@ -102,8 +177,22 @@ def main(argv: list[str] | None = None) -> int:
         environment_vars["VIRTUAL_ENV"] = str(environment)
         environment_vars["PATH"] = str(python.parent) + os.pathsep + os.environ.get("PATH", "")
         environment_vars["UVLAZY_RUNTIME"] = prepare_startup(settings)
+        if mode == "command" and extra_requirements:
+            run_ephemeral_command(
+                settings,
+                list(extra_requirements),
+                args.target,
+                args.arguments,
+                environment_vars,
+            )
         if mode == "command":
             run_command(settings, distribution, args.target, args.arguments, environment_vars)
+        if extra_requirements:
+            with environment_lock(state):
+                Installer(settings).install_many(
+                    list(extra_requirements),
+                    "--with requirements",
+                )
         if args.locked:
             with environment_lock(state):
                 Installer(settings).resolve()

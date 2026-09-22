@@ -20,6 +20,52 @@ fn find_uv() -> Option<PathBuf> {
         })
 }
 
+fn delegates_to_uv(arguments: &[OsString]) -> bool {
+    let Some(command) = arguments.first() else {
+        return false;
+    };
+    if command != "run" {
+        return command != "--help" && command != "-h" && command != "--version" && command != "-V";
+    }
+
+    let mut index = 1;
+    while index < arguments.len() {
+        let argument = arguments[index].to_string_lossy();
+        if matches!(argument.as_ref(), "--help" | "-h") {
+            return false;
+        }
+        if matches!(
+            argument.as_ref(),
+            "--project" | "--from" | "--group" | "--with" | "--extra-index-url"
+        ) {
+            index += 2;
+            continue;
+        }
+        if argument.starts_with("--project=")
+            || argument.starts_with("--from=")
+            || argument.starts_with("--group=")
+            || argument.starts_with("--with=")
+            || argument.starts_with("--extra-index-url=")
+            || matches!(
+                argument.as_ref(),
+                "-q" | "--quiet" | "-m" | "--module" | "--locked"
+            )
+            || (argument.starts_with('-')
+                && argument.len() > 1
+                && argument[1..]
+                    .chars()
+                    .all(|character| matches!(character, 'q' | 'm')))
+        {
+            index += 1;
+            continue;
+        }
+        // Everything after uvlazy's target belongs to the target. An option
+        // uvlazy does not own before the target is an uv-native run request.
+        return argument.starts_with('-');
+    }
+    false
+}
+
 fn launch() -> Result<(), String> {
     let arguments: Vec<OsString> = env::args_os().skip(1).collect();
     if arguments.len() == 1 && (arguments[0] == "--version" || arguments[0] == "-V") {
@@ -32,6 +78,14 @@ fn launch() -> Result<(), String> {
 
     // Interpreter discovery must never sync the current project's dependencies.
     let uv = find_uv().ok_or("uv is required. Install uv and put it on PATH.")?;
+    if delegates_to_uv(&arguments) {
+        let mut command = Command::new(&uv);
+        command.args(&arguments);
+        #[cfg(unix)]
+        return Err(format!("could not start uv: {}", command.exec()));
+        #[cfg(not(unix))]
+        return Err("this release supports macOS and Linux".into());
+    }
     let request = env::var_os("UV_PYTHON").unwrap_or_else(|| OsString::from(">=3.11"));
     let found = Command::new(&uv)
         .args(["python", "find", "--system", "--no-project"])

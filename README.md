@@ -54,6 +54,25 @@ use [`mise trust`](https://mise.jdx.dev/cli/trust.html) to approve it before
 retrying. A shim or uv configuration failure does not mean Python is missing;
 the underlying diagnostic explains what needs fixing.
 
+## Drop-in uv usage
+
+`uvlazy` can replace `uv` behind a shared `UV` variable without changing call
+sites. Its project-aware lazy runner handles repeated `--with` requirements and
+`--extra-index-url` in an isolated environment without syncing the project's
+full environment:
+
+```sh
+UV=uvlazy make lint
+uvlazy run --with ruff==0.15.22 ruff check .
+uvlazy run -q --with typos typos -c .lint/typos.toml
+```
+
+Other commands are delegated to uv, so `uvlazy pip install`,
+`uvlazy sync`, `uvlazy venv`, and `uvlazy cache clean` have uv's behavior.
+Delegation replaces the uvlazy process with uv, preserving arguments, standard
+streams, exit codes, and signals. The real `uv` executable must remain on PATH.
+Other uv-native `run` options that uvlazy does not implement are delegated too.
+
 ## Use in CI
 
 Declare the tool in your project's `pyproject.toml`, alongside your existing

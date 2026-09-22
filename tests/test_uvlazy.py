@@ -18,6 +18,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
+from uvlazy.cli import delegates_to_uv
 from uvlazy.config import UvlazyError, read_project
 
 SOURCE = Path(__file__).resolve().parents[1] / "src"
@@ -129,6 +130,33 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("Set UVLAZY_CACHE_DIR to a writable path", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
+
+    def test_uv_commands_delegate_without_python_discovery(self):
+        shim = self.root / "uv"
+        shim.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 23\n")
+        shim.chmod(0o755)
+        self.env["PATH"] = str(self.root)
+        requests = [
+            ("pip", "install", "--upgrade", "-r", "requirements.txt"),
+            ("sync",),
+            (
+                "venv",
+                "--python",
+                "3.12",
+                "--python-fetch",
+                "automatic",
+                "--python-preference",
+                "only-managed",
+                "-q",
+            ),
+            ("cache", "clean"),
+        ]
+        for request in requests:
+            with self.subTest(request=request):
+                result = self.invoke(*request)
+                self.assertEqual(result.returncode, 23)
+                self.assertEqual(result.stdout.splitlines(), list(request))
+                self.assertEqual(result.stderr, "")
 
 
 def wheel(
@@ -306,6 +334,49 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(report["shared"], 1)
         self.assertEqual(report["installed"], ["lint-tool", "shared"])
         self.assertEqual((self.root / "uv.lock").read_bytes(), before)
+        self.assertFalse((self.root / ".venv").exists())
+
+    def test_run_with_installs_only_pinned_ephemeral_requirements(self):
+        self.project([])
+        wheel(
+            self.wheels,
+            "ephemeral-tool",
+            entries={"ephemeral-tool": "ephemeral_tool:main"},
+            code=textwrap.dedent("""
+                def main():
+                    import importlib.metadata as metadata
+                    import json
+                    import sys
+                    print(json.dumps({
+                        "args": sys.argv[1:],
+                        "version": metadata.version("ephemeral-tool"),
+                        "installed": sorted(
+                            dist.metadata["Name"] for dist in metadata.distributions()
+                        ),
+                    }))
+            """),
+        )
+        result = self.invoke(
+            "run",
+            "--extra-index-url",
+            "https://mirror.invalid/simple",
+            "--with",
+            "ephemeral-tool==1.0",
+            "--with",
+            "unused==1.0",
+            "ephemeral-tool",
+            "check",
+            ".",
+        )
+        self.assert_success(result)
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "args": ["check", "."],
+                "version": "1.0",
+                "installed": ["ephemeral-tool", "unused"],
+            },
+        )
         self.assertFalse((self.root / ".venv").exists())
 
     def test_command_warm_run_reuses_environment_offline(self):
@@ -860,6 +931,42 @@ class ConfigTests(unittest.TestCase):
             lint = ["lint-tool"]
         """)
         self.assertEqual(project.command_package("lint-tool", None, None), ("lint-tool", ["lint"]))
+
+
+class DelegationTests(unittest.TestCase):
+    def test_uv_native_surface_delegates(self):
+        for arguments in [
+            ["pip", "install", "-r", "requirements.txt"],
+            ["sync"],
+            ["venv", "--python", "3.12"],
+            ["cache", "clean"],
+            ["run", "--python", "3.12", "python", "-V"],
+        ]:
+            with self.subTest(arguments=arguments):
+                self.assertTrue(delegates_to_uv(arguments))
+
+    def test_existing_surface_and_target_arguments_stay_native(self):
+        for arguments in [
+            [],
+            ["--help"],
+            ["--version"],
+            ["run", "--help"],
+            ["run", "--project", ".", "--group=lint", "--locked", "tool"],
+            ["run", "--with", "ruff==0.15.22", "ruff", "check", "."],
+            ["run", "-q", "--with=typos", "typos"],
+            [
+                "run",
+                "--extra-index-url",
+                "https://example.invalid/simple",
+                "--with",
+                "tool",
+                "tool",
+            ],
+            ["run", "-qm", "module", "--with", "target-argument"],
+            ["run", "tool", "--extra-index-url", "target-argument"],
+        ]:
+            with self.subTest(arguments=arguments):
+                self.assertFalse(delegates_to_uv(arguments))
 
 
 if __name__ == "__main__":

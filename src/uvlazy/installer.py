@@ -59,6 +59,11 @@ class Installer:
         self.quiet = settings["quiet"]
         self.groups = settings["groups"]
         self.locked = settings["locked"]
+        self.extra_indexes = settings.get("extra_indexes", [])
+
+    def add_extra_indexes(self, command: list[str]):
+        for index in self.extra_indexes:
+            command.extend(["--extra-index-url", index])
 
     def resolve(self) -> Path:
         """Call with the environment lock held; never update the project lock."""
@@ -100,6 +105,7 @@ class Installer:
                 "--no-header",
                 "--no-annotate",
             ]
+            self.add_extra_indexes(command)
         if self.quiet:
             command.append("--quiet")
         content = run_uv(command, self.root, output=True)
@@ -110,14 +116,26 @@ class Installer:
 
     def install(self, distribution: str, trigger: str):
         """Install one declared root and its closure against the shared pins."""
+        self.install_many([distribution], trigger)
+
+    def install_many(self, distributions: list[str], trigger: str):
+        """Install declared roots and their closures against the shared pins."""
         constraints = self.resolve()
         if not self.quiet:
-            print(f"uvlazy: {trigger} → installing {distribution}", file=sys.stderr)
+            packages = ", ".join(distributions)
+            print(f"uvlazy: {trigger} → installing {packages}", file=sys.stderr)
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", dir=self.state, encoding="utf-8", delete=False
         ) as handle:
             requested = Path(handle.name)
-            handle.write("\n".join(self.requirements[distribution]) + "\n")
+            handle.write(
+                "\n".join(
+                    requirement
+                    for distribution in distributions
+                    for requirement in self.requirements[distribution]
+                )
+                + "\n"
+            )
         try:
             command = [
                 self.uv,
@@ -130,6 +148,7 @@ class Installer:
                 "--constraints",
                 str(constraints),
             ]
+            self.add_extra_indexes(command)
             if self.quiet:
                 command.append("--quiet")
             run_uv(command, self.root)

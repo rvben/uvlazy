@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Support repeated `uv run --with` requirements and `--extra-index-url` in
+  uvlazy's isolated environment without syncing the full project environment.
+- Delegate other uv subcommands, including `pip`, `sync`, `venv`, and `cache`,
+  so uvlazy can be used behind a shared `UV` command variable.
+
 ## 0.1.2
 
 - Enable lazy imports in managed Python tools and their Python subprocesses,
