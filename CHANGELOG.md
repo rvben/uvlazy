@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.3
 
 - Support repeated `uv run --with` requirements and `--extra-index-url` in
   uvlazy's isolated environment without syncing the full project environment.
