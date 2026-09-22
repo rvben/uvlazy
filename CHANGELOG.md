@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.4
+
+- Reuse the standard project `.venv` for project-aware lazy runs, installing
+  only the selected tool closure or dependencies reached by imports. Existing
+  environments created by `uv sync` are reused without reinstalling matching
+  locked tools.
+- Add `--only-group`, direct managed `python` execution, project constraint
+  dependencies, and an explicit `--eager` escape hatch for normal uv syncing.
+- Delegate `uv run --with` unchanged so project layering, requirement
+  resolution, and ephemeral environment caching exactly follow uv.
+
 ## 0.1.3
 
 - Support repeated `uv run --with` requirements and `--extra-index-url` in

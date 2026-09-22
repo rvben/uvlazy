@@ -150,6 +150,7 @@ class LauncherTests(unittest.TestCase):
                 "-q",
             ),
             ("cache", "clean"),
+            ("run", "--with", "ruff==0.15.22", "ruff", "check", "."),
         ]
         for request in requests:
             with self.subTest(request=request):
@@ -334,7 +335,8 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(report["shared"], 1)
         self.assertEqual(report["installed"], ["lint-tool", "shared"])
         self.assertEqual((self.root / "uv.lock").read_bytes(), before)
-        self.assertFalse((self.root / ".venv").exists())
+        self.assertTrue((self.root / ".venv" / "bin" / "python").is_file())
+        self.assertFalse((self.root / ".uvlazy").exists())
 
     def test_run_with_installs_only_pinned_ephemeral_requirements(self):
         self.project([])
@@ -377,7 +379,8 @@ class IntegrationTests(unittest.TestCase):
                 "installed": ["ephemeral-tool", "unused"],
             },
         )
-        self.assertFalse((self.root / ".venv").exists())
+        self.assertTrue((self.root / ".venv" / "bin" / "python").is_file())
+        self.assertFalse((self.root / ".uvlazy").exists())
 
     def test_command_warm_run_reuses_environment_offline(self):
         self.tool_project()
@@ -387,6 +390,45 @@ class IntegrationTests(unittest.TestCase):
         result = self.invoke("run", "lint-tool")
         self.assert_success(result)
         self.assertEqual(result.stderr, "")
+
+    def test_command_reuses_an_existing_synced_project_environment(self):
+        self.tool_project(group=None)
+        synced = subprocess.run(
+            [UV, "sync", "--no-install-project"],
+            cwd=self.root,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assert_success(synced)
+        result = self.invoke("run", "lint-tool")
+        self.assert_success(result)
+        self.assertNotIn("installing lint-tool", result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout)["installed"],
+            ["lint-tool", "second", "shared", "unused"],
+        )
+
+    def test_bare_run_with_matches_project_locked_uv_resolution(self):
+        self.tool_project()
+        wheel(
+            self.wheels,
+            "lint-tool",
+            "2.0",
+            entries={"lint-tool": "lint_tool:main"},
+            code=textwrap.dedent("""
+                def main():
+                    import importlib.metadata as metadata
+                    import json
+                    print(json.dumps({"version": metadata.version("lint-tool")}))
+            """),
+        )
+        result = self.invoke("run", "--with", "lint-tool", "lint-tool")
+        self.assert_success(result)
+        self.assertEqual(json.loads(result.stdout)["version"], "1.0")
+        self.assertTrue((self.root / ".venv" / "bin" / "python").is_file())
+        self.assertFalse((self.root / ".uvlazy").exists())
 
     def test_command_alias_and_from_use_declared_provider(self):
         self.tool_project('[tool.uvlazy.commands]\nlint = "lint-tool"\n')
@@ -404,6 +446,15 @@ class IntegrationTests(unittest.TestCase):
         missing = self.invoke("run", "--group", "missing", "lint-tool")
         self.assertNotEqual(missing.returncode, 0)
         self.assertIn("Unknown dependency group", missing.stderr)
+
+    def test_only_group_excludes_project_dependencies(self):
+        self.tool_project()
+        result = self.invoke("run", "--only-group", "lint", "lint-tool")
+        self.assert_success(result)
+        self.assertEqual(json.loads(result.stdout)["installed"], ["lint-tool", "shared"])
+        excluded = self.invoke("run", "--only-group", "lint", "second")
+        self.assertNotEqual(excluded.returncode, 0)
+        self.assertIn("must be declared", excluded.stderr)
 
     def test_command_in_project_dependencies(self):
         self.tool_project(group=None)
@@ -441,7 +492,7 @@ class IntegrationTests(unittest.TestCase):
                 self.assert_success(result)
                 self.assertEqual(json.loads(result.stdout), ["aws-cdk-cli"])
                 self.assertEqual((self.root / "uv.lock").read_bytes(), before)
-                self.assertFalse((self.root / ".venv").exists())
+                self.assertTrue((self.root / ".venv" / "bin" / "python").is_file())
 
     def test_cdk_does_not_install_an_undeclared_cli_provider(self):
         wheel(self.wheels, "aws-cdk-lib")
@@ -490,7 +541,7 @@ class IntegrationTests(unittest.TestCase):
         )
         self.assertEqual((self.root / "started").read_text(), "once\n")
         self.assertEqual((self.root / "uv.lock").read_bytes(), before)
-        self.assertFalse((self.root / ".venv").exists())
+        self.assertTrue((self.root / ".venv" / "bin" / "python").is_file())
 
     def test_nested_python_children_inherit_lazy_imports_and_uv_does_not(self):
         shim = self.root / "uv"
@@ -675,8 +726,8 @@ class IntegrationTests(unittest.TestCase):
         result = self.run_script("print('plain')")
         self.assert_success(result)
         self.assertEqual(result.stdout, "plain\n")
-        self.assertEqual(list(self.root.glob(".uvlazy/*/constraints.txt")), [])
-        self.assertEqual(list(self.root.glob(".uvlazy/*/venv/lib/*/site-packages/*.dist-info")), [])
+        self.assertEqual(list(self.root.glob(".venv/.uvlazy/*/constraints.txt")), [])
+        self.assertEqual(list(self.root.glob(".venv/lib/*/site-packages/*.dist-info")), [])
 
     def test_first_import_installs_closure_and_pins_full_graph(self):
         result = self.run_script("""
@@ -791,6 +842,34 @@ class IntegrationTests(unittest.TestCase):
         self.assert_success(result)
         self.assertEqual(result.stdout, "1\n")
 
+    def test_managed_python_installs_declared_imports_on_demand(self):
+        self.project(["first", "second"])
+        result = self.invoke("run", "python", "-c", "import first; print(first.VALUE)")
+        self.assert_success(result)
+        self.assertEqual(result.stdout, "1\n")
+        self.assertIn("installing first", result.stderr)
+
+    def test_eager_delegates_to_uv_project_sync(self):
+        self.project([])
+        result = self.invoke("run", "--eager", "python", "-c", "print('eager')")
+        self.assert_success(result)
+        self.assertEqual(result.stdout, "eager\n")
+        self.assertTrue((self.root / ".venv" / "bin" / "python").is_file())
+        self.assertFalse((self.root / ".venv" / ".uvlazy").exists())
+
+    def test_no_project_retains_uv_isolation(self):
+        self.project([])
+        result = self.invoke("run", "--no-project", "python", "-c", "print('isolated')")
+        self.assert_success(result)
+        self.assertEqual(result.stdout, "isolated\n")
+        self.assertFalse((self.root / ".venv").exists())
+
+    def test_unlocked_resolution_honors_project_constraints(self):
+        self.project(["first"], '[tool.uv]\nconstraint-dependencies = ["shared<2"]\n')
+        result = self.run_script("import first; print(first.VALUE)")
+        self.assert_success(result)
+        self.assertEqual(result.stdout, "1\n")
+
     def test_inactive_environment_marker(self):
         self.project(['unused; python_version < "2"'])
         result = self.run_script("""
@@ -801,7 +880,7 @@ class IntegrationTests(unittest.TestCase):
         """)
         self.assert_success(result)
         self.assertEqual(result.stdout, "inactive\n")
-        self.assertEqual(list(self.root.glob(".uvlazy/*/venv/lib/*/site-packages/unused*")), [])
+        self.assertEqual(list(self.root.glob(".venv/lib/*/site-packages/unused*")), [])
 
     def test_resolution_failure_stops_before_application_continues(self):
         self.project(["unavailable"])
@@ -873,6 +952,24 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(project.requirements, {"some-package": requirements})
         self.assertEqual(project.imports, {"some_package": "some-package"})
 
+    def test_preserves_uv_constraint_dependencies(self):
+        project = self.read(
+            '[project]\ndependencies = ["first"]\n'
+            '[tool.uv]\nconstraint-dependencies = ["shared<2"]\n'
+        )
+        self.assertEqual(project.constraints, ["shared<2"])
+
+    def test_only_group_selection_excludes_project_dependencies(self):
+        project = self.read(
+            '[project]\ndependencies = ["first"]\n[dependency-groups]\nlint = ["lint-tool"]\n'
+        )
+        self.assertEqual(
+            project.selected(["lint"], include_project=False),
+            {"lint-tool": ["lint-tool"]},
+        )
+        with self.assertRaisesRegex(UvlazyError, "must be declared"):
+            project.command_package("first", ["lint"], None, include_project=False)
+
     def test_alias_cannot_add_undeclared_dependency(self):
         with self.assertRaisesRegex(UvlazyError, "declared"):
             self.read('[tool.uvlazy.imports]\na = "not-declared"')
@@ -941,6 +1038,17 @@ class DelegationTests(unittest.TestCase):
             ["venv", "--python", "3.12"],
             ["cache", "clean"],
             ["run", "--python", "3.12", "python", "-V"],
+            ["run", "--no-project", "python", "-V"],
+            ["run", "--with", "ruff==0.15.22", "ruff", "check", "."],
+            ["run", "-q", "--with=typos", "typos"],
+            [
+                "run",
+                "--extra-index-url",
+                "https://example.invalid/simple",
+                "--with",
+                "tool",
+                "tool",
+            ],
         ]:
             with self.subTest(arguments=arguments):
                 self.assertTrue(delegates_to_uv(arguments))
@@ -952,16 +1060,8 @@ class DelegationTests(unittest.TestCase):
             ["--version"],
             ["run", "--help"],
             ["run", "--project", ".", "--group=lint", "--locked", "tool"],
-            ["run", "--with", "ruff==0.15.22", "ruff", "check", "."],
-            ["run", "-q", "--with=typos", "typos"],
-            [
-                "run",
-                "--extra-index-url",
-                "https://example.invalid/simple",
-                "--with",
-                "tool",
-                "tool",
-            ],
+            ["run", "--only-group", "lint", "tool"],
+            ["run", "--eager", "tool"],
             ["run", "-qm", "module", "--with", "target-argument"],
             ["run", "tool", "--extra-index-url", "target-argument"],
         ]:

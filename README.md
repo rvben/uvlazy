@@ -57,9 +57,9 @@ the underlying diagnostic explains what needs fixing.
 ## Drop-in uv usage
 
 `uvlazy` can replace `uv` behind a shared `UV` variable without changing call
-sites. Its project-aware lazy runner handles repeated `--with` requirements and
-`--extra-index-url` in an isolated environment without syncing the project's
-full environment:
+sites. `uv run --with` invocations, including repeated requirements and
+`--extra-index-url`, are forwarded unchanged so their behavior stays identical
+to the installed uv version:
 
 ```sh
 UV=uvlazy make lint
@@ -72,6 +72,10 @@ Other commands are delegated to uv, so `uvlazy pip install`,
 Delegation replaces the uvlazy process with uv, preserving arguments, standard
 streams, exit codes, and signals. The real `uv` executable must remain on PATH.
 Other uv-native `run` options that uvlazy does not implement are delegated too.
+`--no-project` is delegated directly and retains uv's isolated behavior.
+For `--with`, uv owns project synchronization, overlay resolution, and the
+ephemeral environment cache. Use `uvlazy run <declared-command>` without
+`--with` for uvlazy's project-locked minimal-install behavior.
 
 ## Use in CI
 
@@ -170,6 +174,14 @@ uvlazy run --group lint rumdl check .
 requirements in different groups: choose compatible groups explicitly. uv
 validates the selected combination against the project's lockfile.
 
+`--only-group` excludes `[project].dependencies` while selecting a group. Use
+`--eager` when a job intentionally wants uv's normal project sync first:
+
+```sh
+uvlazy run --only-group lint rumdl check .
+uvlazy run --eager python app.py
+```
+
 ## Lazy Python imports
 
 Scripts and modules retain the original import-based behavior:
@@ -179,9 +191,10 @@ uvlazy run app.py --your-argument
 uvlazy run -m your_module
 uvlazy run --group dev app.py
 uvlazy run --locked app.py
+uvlazy run python -c "import your_module"
 ```
 
-A script starts in a separate environment and installs declared packages when
+A script starts in the project environment and installs declared packages when
 execution first reaches their missing imports. Each imported package brings its
 normal dependency tree. The script is never restarted, and exceptions inside
 imported packages propagate normally. Existing modules and your local code take
@@ -232,20 +245,23 @@ before any application code runs, even on paths that import nothing.
 
 ## Environments and caching
 
-Environments and constraints live in `.uvlazy/<fingerprint>/`. Each tool package
-and group selection has its own environment, separate from Python script runs.
-Subsequent runs reuse installed packages. Concurrent runs serialize environment
-creation and installation. A warm tool environment can run offline.
+Project-aware tool, script, module, and managed Python runs use the standard
+project `.venv`. On a clean project, uvlazy creates it and installs only what the
+command reaches. If `uv sync` already initialized the full environment, uvlazy
+reuses matching locked packages without reinstalling them. Lazy runs can
+accumulate packages; a later `uv sync` may prune them, and uvlazy adds them again
+when needed.
 
-Changes to `pyproject.toml`, `uv.lock`, local `uv.toml`, the launcher interpreter,
-selected groups, uvlazy version, or checkout path select a fresh environment. This avoids
-reusing virtualenv scripts whose absolute paths point to another checkout.
-Existing `.venv` and `uv.lock` files are left alone.
+Resolution manifests and locks live under `.venv/.uvlazy/`; they are metadata,
+not a package cache. Explicit `--with` runs are handled entirely by uv: it syncs
+the project environment and layers its cached ephemeral environment according
+to that uv version. `uv cache clean` removes uv's cached overlays. `--no-project`
+uses uv's isolation, while `--eager` requests normal uv syncing for an otherwise
+native uvlazy run.
 
-For CI, cache uv's download cache to reuse package artifacts across jobs.
-`.uvlazy` environments contain absolute paths and should only be reused at the
-same checkout path with a compatible interpreter. Add `.uvlazy/` to the project's
-`.gitignore`. Delete it while no uvlazy processes are running to start fresh.
+All downloads, wheels, builds, and extracted package artifacts use uv's cache;
+uvlazy does not maintain a duplicate package cache. For CI, cache uv's cache to
+reuse those artifacts. Add `.venv/` to `.gitignore`.
 
 The native executable also caches its bundled engine under
 `$XDG_CACHE_HOME/uvlazy` (default: `~/Library/Caches/uvlazy` on macOS or
@@ -263,6 +279,7 @@ archive is keyed by its contents and recreated locally when needed.
   artifact hashes. This is not a complete replacement for uv's locked sync.
 - The project itself is not installed. Editable installs and uv sources/workspaces
   remain unsupported; uv sources/workspaces are rejected explicitly.
+- `[tool.uv].constraint-dependencies` is honored for unlocked resolution.
 - Project optional-dependency groups cannot be selected yet. Extras within a
   selected requirement and environment markers are passed through to uv.
 - For Python scripts, metadata queries, plugin discovery, namespace-package

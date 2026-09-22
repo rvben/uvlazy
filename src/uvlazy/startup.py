@@ -29,11 +29,7 @@ def prepare_startup(settings: dict) -> str:
         "finally:\n"
         "    sys.path.pop(0)\n"
     )
-    hook = (
-        f"import os; exec({bootstrap!a}) "
-        f"if os.path.dirname(os.environ.get('UVLAZY_RUNTIME', '')) == {str(runtime.parent)!a} "
-        "else None\n"
-    )
+    hook = f"import os; exec({bootstrap!a}) if os.environ.get('UVLAZY_RUNTIME') else None\n"
     with environment_lock(state):
         result = subprocess.run(
             [

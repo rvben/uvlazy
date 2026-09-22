@@ -42,9 +42,15 @@ def run_command(settings: dict, distribution: str, target: str, arguments: list[
     with environment_lock(installer.state):
         # Even a cached executable must not bypass lock validation on first use
         # of a configuration. Cached constraints belong to this fingerprint.
-        installer.resolve()
+        constraints = installer.resolve()
         ready = installer.state / "tool-ready"
-        if not ready.is_file() or not executable.is_file():
+        installed = (
+            executable.is_file()
+            and os.access(executable, os.X_OK)
+            and owns_executable(installer.python, distribution, executable)
+            and installer.installed_matches(distribution, constraints)
+        )
+        if not installed:
             installer.install(distribution, f"command {target}")
         if not (
             executable.is_file()
@@ -58,29 +64,4 @@ def run_command(settings: dict, distribution: str, target: str, arguments: list[
         ready.touch()
     # Replace the launcher so CI receives the tool's exit status and signals
     # directly. Its arguments, working directory, stdin and streams are intact.
-    os.execve(executable, [str(executable), *arguments], env)
-
-
-def run_ephemeral_command(
-    settings: dict, distributions: list[str], target: str, arguments: list[str], env: dict
-):
-    """Install an explicit --with set and execute the command it provides."""
-    installer = Installer(settings)
-    executable = Path(installer.python).parent / target
-    with environment_lock(installer.state):
-        installer.resolve()
-        ready = installer.state / "with-ready"
-        if not ready.is_file() or not executable.is_file():
-            installer.install_many(distributions, f"command {target}")
-        owners = [
-            distribution
-            for distribution in distributions
-            if owns_executable(installer.python, distribution, executable)
-        ]
-        if not executable.is_file() or not os.access(executable, os.X_OK) or not owners:
-            requested = ", ".join(repr(distribution) for distribution in distributions)
-            raise UvlazyError(
-                f"The --with package(s) {requested} do not provide executable {target!r}."
-            )
-        ready.touch()
     os.execve(executable, [str(executable), *arguments], env)

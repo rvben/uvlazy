@@ -31,6 +31,7 @@ fn main() {
     paths.sort();
     let mut bootstrap = String::from("files = {\n");
     for path in paths {
+        println!("cargo:rerun-if-changed={}", path.display());
         let name = format!("uvlazy/{}", path.file_name().unwrap().to_str().unwrap());
         let source = fs::read_to_string(&path).unwrap();
         writeln!(

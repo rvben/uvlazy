@@ -34,9 +34,15 @@ fn delegates_to_uv(arguments: &[OsString]) -> bool {
         if matches!(argument.as_ref(), "--help" | "-h") {
             return false;
         }
+        if argument == "--no-project" {
+            return true;
+        }
+        if argument == "--with" || argument.starts_with("--with=") {
+            return true;
+        }
         if matches!(
             argument.as_ref(),
-            "--project" | "--from" | "--group" | "--with" | "--extra-index-url"
+            "--project" | "--from" | "--group" | "--only-group" | "--extra-index-url"
         ) {
             index += 2;
             continue;
@@ -44,11 +50,11 @@ fn delegates_to_uv(arguments: &[OsString]) -> bool {
         if argument.starts_with("--project=")
             || argument.starts_with("--from=")
             || argument.starts_with("--group=")
-            || argument.starts_with("--with=")
+            || argument.starts_with("--only-group=")
             || argument.starts_with("--extra-index-url=")
             || matches!(
                 argument.as_ref(),
-                "-q" | "--quiet" | "-m" | "--module" | "--locked"
+                "-q" | "--quiet" | "-m" | "--module" | "--locked" | "--eager"
             )
             || (argument.starts_with('-')
                 && argument.len() > 1

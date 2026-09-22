@@ -33,9 +33,14 @@ class Project:
     groups: dict[str, dict[str, list[str]]]
     direct_groups: dict[str, set[str]]
     commands: dict[str, str]
+    constraints: list[str]
 
-    def selected(self, groups: list[str]) -> dict[str, list[str]]:
-        requirements = {name: list(items) for name, items in self.requirements.items()}
+    def selected(self, groups: list[str], *, include_project: bool = True) -> dict[str, list[str]]:
+        requirements = (
+            {name: list(items) for name, items in self.requirements.items()}
+            if include_project
+            else {}
+        )
         for group in groups:
             if group not in self.groups:
                 raise UvlazyError(f"Unknown dependency group {group!r}.")
@@ -44,7 +49,12 @@ class Project:
         return {name: list(dict.fromkeys(items)) for name, items in requirements.items()}
 
     def command_package(
-        self, command: str, groups: list[str] | None, provider: str | None
+        self,
+        command: str,
+        groups: list[str] | None,
+        provider: str | None,
+        *,
+        include_project: bool = True,
     ) -> tuple[str, list[str]]:
         distribution = normalize(provider) if provider else self.commands.get(command)
         if distribution is None:
@@ -55,11 +65,11 @@ class Project:
         if groups is None:
             groups = (
                 []
-                if distribution in self.requirements
+                if include_project and distribution in self.requirements
                 else [group for group, names in self.direct_groups.items() if distribution in names]
             )
         groups = sorted(set(groups))
-        if distribution not in self.selected(groups):
+        if distribution not in self.selected(groups, include_project=include_project):
             raise UvlazyError(
                 f"{distribution!r} must be declared in project dependencies or a selected group."
             )
@@ -158,6 +168,8 @@ def read_project(root: Path) -> Project:
     if "dependencies" in project.get("dynamic", []):
         raise UvlazyError("Declare dependencies statically in [project].dependencies.")
     requirements = parse_requirements(project.get("dependencies", []), "[project].dependencies")
+    constraints = uv.get("constraint-dependencies", [])
+    parse_requirements(constraints, "[tool.uv].constraint-dependencies")
     groups, direct_groups = dependency_groups(data, uv)
     declared = set(requirements).union(*(set(items) for items in groups.values()))
     imports: dict[str, str] = {}
@@ -214,5 +226,12 @@ def read_project(root: Path) -> Project:
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
     return Project(
-        root, requirements, imports, digest.hexdigest()[:20], groups, direct_groups, commands
+        root,
+        requirements,
+        imports,
+        digest.hexdigest()[:20],
+        groups,
+        direct_groups,
+        commands,
+        constraints,
     )
