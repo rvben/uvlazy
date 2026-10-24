@@ -19,6 +19,16 @@ bundles a Python engine with no third-party runtime dependencies.
 
 ## Install
 
+### Homebrew
+
+```sh
+brew install rvben/tap/uvlazy
+```
+
+Homebrew builds from source and installs the required dependencies.
+
+### Other installation methods
+
 Install through either registry:
 
 ```sh
